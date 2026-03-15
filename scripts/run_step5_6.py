@@ -347,26 +347,33 @@ if not os.path.exists(step6_done):
             e = seg['end'] / SPEED_UP
             sh, sm, ss = int(s // 3600), int(s % 3600 // 60), s % 60
             eh, em, es = int(e // 3600), int(e % 3600 // 60), e % 60
-            # Split long subtitles (>20 chars per line)
+            # Split subtitles: max 15 chars/line to avoid player auto-wrap orphans
+            MAX_LINE = 15
             lines = []
-            if len(t) > 20:
+            if len(t) > MAX_LINE:
                 # Split at punctuation first
                 parts = re.split(r'([，。！？、；：])', t)
                 cur_line = ''
-                for j, part in enumerate(parts):
-                    if cur_line and len(cur_line + part) > 22:
+                for part in parts:
+                    if cur_line and len(cur_line + part) > MAX_LINE:
                         lines.append(cur_line)
                         cur_line = part
                     else:
                         cur_line += part
                 if cur_line:
                     lines.append(cur_line)
-                # If still too long, force split
+                # Force split lines still too long
                 final_lines = []
                 for line in lines:
-                    while len(line) > 25:
-                        final_lines.append(line[:20])
-                        line = line[20:]
+                    while len(line) > MAX_LINE + 3:
+                        # Find a natural break point (avoid orphan chars)
+                        bp = MAX_LINE
+                        for k in range(MAX_LINE, max(MAX_LINE - 5, 0), -1):
+                            if line[k] in '，。！？、；：的了是在有和':
+                                bp = k + 1
+                                break
+                        final_lines.append(line[:bp])
+                        line = line[bp:]
                     if line:
                         final_lines.append(line)
                 lines = final_lines[:3]  # Max 3 lines
@@ -427,7 +434,7 @@ if not os.path.exists(step6_done):
                     s, e = seg.get('original_start', seg['start']), seg.get('original_end', seg['end'])
                     sh, sm, ss = int(s//3600), int(s%3600//60), s%60
                     eh, em, es = int(e//3600), int(e%3600//60), e%60
-                    lines = [t] if len(t) <= 25 else [t[i:i+25] for i in range(0, len(t), 25)][:3]
+                    lines = [t] if len(t) <= 15 else [t[i:i+15] for i in range(0, len(t), 15)][:3]
                     f.write(f"{idx}\n{sh:02d}:{sm:02d}:{int(ss):02d},{int((ss%1)*1000):03d} --> {eh:02d}:{em:02d}:{int(es):02d},{int((es%1)*1000):03d}\n")
                     f.write('\n'.join(lines) + '\n\n')
                     idx += 1
