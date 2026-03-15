@@ -17,16 +17,50 @@
 
 ```
 YouTube URL
-  → Local: yt-dlp download (with metadata + thumbnail)
-  → Google Drive: upload video
-  → Colab GPU (via SSH over ngrok):
+  → Local Mac: yt-dlp download (with metadata + thumbnail)
+  → Copy to local Google Drive folder (auto-syncs to cloud)
+  → Colab GPU mounts the same Drive (via SSH over ngrok):
       Step 1-2: FFmpeg audio extraction + Demucs vocal separation
       Step 3:   WhisperX transcription + speaker diarization
       Step 4:   Qwen2.5-7B translation (with length control)
       Step 5:   Fish Speech S2 TTS (with voice cloning)
       Step 6:   FFmpeg video synthesis (P1 dubbed + P2 subtitled)
-  → Local: Bilibili upload (dual-part + cover)
+  → Results sync back to local Mac via Google Drive
+  → Local Mac: Bilibili upload (dual-part + cover)
 ```
+
+### How Google Drive Syncs Everything / Google Drive 如何同步
+
+The pipeline uses **Google Drive for Desktop** as a shared filesystem between your local Mac and Colab:
+
+整个流水线使用 **Google Drive 桌面版** 作为本地 Mac 和 Colab 之间的共享文件系统：
+
+```
+Local Mac (read/write)                  Colab GPU (read/write)
+~/Library/CloudStorage/                 /content/drive/MyDrive/
+  GoogleDrive-<email>/                    video-translate/
+    我的云端硬盘/  (or "My Drive/")          processing/...
+      video-translate/                     .env
+        processing/...                     ref_voice.wav
+        .env
+        ref_voice.wav
+         ↕ auto-sync ↕                      ↕ mounted ↕
+              Google Drive Cloud
+```
+
+- **Local → Colab**: You download a video locally and copy it to the Drive folder. It auto-syncs to cloud, then Colab reads it via Drive mount.
+- **Colab → Local**: Colab writes results (`video_chinese.mp4`, `translation.json`, etc.) to Drive. They sync back to your local Mac automatically.
+- **Credentials**: `.env`, `bilibili_cookies.json`, `ref_voice.wav` are stored on Drive and accessible from both sides.
+- **No manual upload/download needed** — just copy files to the local Drive folder.
+
+- **本地 → Colab**：你在本地下载视频并复制到 Drive 文件夹，自动同步到云端，Colab 通过 Drive 挂载读取。
+- **Colab → 本地**：Colab 将结果（`video_chinese.mp4`、`translation.json` 等）写入 Drive，自动同步回本地 Mac。
+- **凭证**：`.env`、`bilibili_cookies.json`、`ref_voice.wav` 存在 Drive 上，两端都能访问。
+- **无需手动上传/下载** — 只需把文件复制到本地 Drive 文件夹即可。
+
+> **macOS path note / macOS 路径说明**: Google Drive for Desktop creates the folder at `~/Library/CloudStorage/GoogleDrive-<email>/`. The subfolder name depends on your system language: `我的云端硬盘` (Chinese) or `My Drive` (English).
+>
+> Google Drive 桌面版在 `~/Library/CloudStorage/GoogleDrive-<email>/` 创建文件夹。子目录名取决于系统语言：中文系统为"我的云端硬盘"，英文系统为"My Drive"。
 
 ## Prerequisites / 前置条件
 
@@ -117,13 +151,13 @@ Upload `NewVideoTranslate.ipynb` to Google Colab.
 
 将 `NewVideoTranslate.ipynb` 上传到 Google Colab。
 
-### 4. Record Voice Reference / 录制声音参考
+### 5. Record Voice Reference / 录制声音参考
 
 Record 10-30 seconds of yourself reading Chinese text. Save as `ref_voice.wav` (44.1kHz) in the `video-translate/` folder on Drive. This ensures consistent voice across all TTS segments.
 
 录制 10-30 秒的中文朗读音频，保存为 `ref_voice.wav`（44.1kHz）到 Drive 的 `video-translate/` 目录。这确保所有 TTS 片段使用一致的声音。
 
-### 5. Bilibili Upload (Optional) / B站上传（可选）
+### 6. Bilibili Upload (Optional) / B站上传（可选）
 
 Create `video-translate/bilibili_cookies.json` on Drive:
 
