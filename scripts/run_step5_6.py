@@ -429,14 +429,23 @@ if not os.path.exists(step6_done):
             sh, sm, ss = int(s // 3600), int(s % 3600 // 60), s % 60
             eh, em, es = int(e // 3600), int(e % 3600 // 60), e % 60
             # Split subtitles: FontSize=16 fits ~22 Chinese chars per line on 1080p
-            # Never break English words mid-word
+            # Rules: no English word breaks, no punctuation at line start
+            PUNCTUATION = '，。！？、；：,.!?;:'
             MAX_LINE = 22
             lines = []
             if len(t) > MAX_LINE:
-                # Split at punctuation first
-                parts = re.split(r'([，。！？、；：])', t)
+                # Split at punctuation (keep punctuation attached to preceding text)
+                parts = re.split(r'([，。！？、；：,.!?;:])', t)
+                # Merge punctuation back to preceding part
+                merged = []
+                for p in parts:
+                    if p and p in PUNCTUATION and merged:
+                        merged[-1] += p
+                    elif p:
+                        merged.append(p)
+                # Build lines respecting max length
                 cur_line = ''
-                for part in parts:
+                for part in merged:
                     if cur_line and len(cur_line + part) > MAX_LINE:
                         lines.append(cur_line)
                         cur_line = part
@@ -444,17 +453,20 @@ if not os.path.exists(step6_done):
                         cur_line += part
                 if cur_line:
                     lines.append(cur_line)
-                # Force split lines still too long, respecting English words
+                # Force split lines still too long
                 final_lines = []
                 for line in lines:
                     while len(line) > MAX_LINE + 3:
                         bp = MAX_LINE
-                        # Don't break inside English words: scan back for non-alpha
+                        # Don't break inside English words
                         if bp < len(line) and line[bp].isascii() and line[bp].isalpha():
                             for k in range(bp, max(bp - 10, 0), -1):
                                 if not (line[k].isascii() and line[k].isalpha()):
                                     bp = k + 1
                                     break
+                        # Don't leave punctuation at start of next line
+                        if bp < len(line) and line[bp] in PUNCTUATION:
+                            bp += 1
                         final_lines.append(line[:bp])
                         line = line[bp:]
                     if line:
