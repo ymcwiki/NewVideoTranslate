@@ -196,8 +196,7 @@ def upload(folder, title, desc, tags):
     video = Data()
     video.title = title
     video.desc = desc
-    video.copyright = 2
-    video.source = source
+    video.copyright = 1  # 原创
     video.tid = 201
     video.set_tag(tags)
 
