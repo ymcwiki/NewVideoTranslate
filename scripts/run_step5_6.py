@@ -403,14 +403,31 @@ if not os.path.exists(step6_done):
     else:
         shutil.copy(tts_path, final_audio)
 
-    # Encode video
+    # Probe source video bitrate to match quality
     print('  Encoding video...')
+    src_bitrate = None
+    try:
+        probe = subprocess.run(
+            ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', video_path],
+            capture_output=True, text=True, timeout=10)
+        src_bitrate = int(json.loads(probe.stdout).get('format', {}).get('bit_rate', 0))
+    except Exception:
+        pass
+    # Use CRF 18 (visually near-lossless) with medium preset; cap bitrate to source
+    encode_args = ['-c:v', 'libx264', '-preset', 'medium', '-crf', '18']
+    if src_bitrate and src_bitrate > 0:
+        # Cap at source bitrate to avoid bloating file size
+        maxrate = f'{int(src_bitrate / 1000)}k'
+        bufsize = f'{int(src_bitrate / 500)}k'
+        encode_args += ['-maxrate', maxrate, '-bufsize', bufsize]
+        print(f'  Source bitrate: {src_bitrate/1e6:.1f} Mbps, capping output')
+
     srt_esc = srt_path.replace(':', '\\:').replace("'", "\\'")
     fc = f"[0:v]setpts=PTS/{SPEED_UP},subtitles='{srt_esc}':force_style='FontName=Noto Sans CJK SC,FontSize=22'[v];[1:a]atempo={SPEED_UP}[a]"
     r = subprocess.run([
         'ffmpeg', '-y', '-i', video_path, '-i', final_audio,
         '-filter_complex', fc, '-map', '[v]', '-map', '[a]',
-        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+        *encode_args,
         '-c:a', 'aac', '-b:a', '192k', output_video
     ], capture_output=True, text=True)
 
@@ -442,7 +459,9 @@ if not os.path.exists(step6_done):
             p2_fc = f"subtitles='{p2_srt_esc}':force_style='FontName=Noto Sans CJK SC,FontSize=22'"
             r2 = subprocess.run([
                 'ffmpeg', '-y', '-i', video_path, '-vf', p2_fc,
-                '-c:a', 'copy', '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', p2_video
+                '-c:a', 'copy', '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
+                *((['-maxrate', maxrate, '-bufsize', bufsize] if src_bitrate and src_bitrate > 0 else [])),
+                p2_video
             ], capture_output=True, text=True)
             if os.path.exists(p2_video) and os.path.getsize(p2_video) > 1000:
                 print(f'  P2 Done! {os.path.getsize(p2_video)/1e6:.1f}MB')
