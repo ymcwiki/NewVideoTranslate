@@ -93,7 +93,25 @@ SSH_PASSWORD=your_ssh_password_here
 HF_TOKEN=your_huggingface_token_here
 ```
 
-### 3. Upload the Colab Notebook / 上传 Colab Notebook
+### 3. Enable Chrome Remote Debugging / 启用 Chrome 远程调试
+
+Chrome 146+ introduced a new feature for remote debugging without command-line flags (which Google blocks for login).
+
+Chrome 146+ 新增了无需命令行参数的远程调试功能（命令行参数方式会被 Google 登录阻止）。
+
+1. Open Chrome and navigate to `chrome://inspect/#remote-debugging`
+2. Toggle **ON** the "Enable remote debugging" switch
+3. This allows tools like [chrome-cdp](https://github.com/nichochar/chrome-cdp-skill) to automate Colab without triggering Google's "unsafe browser" detection
+
+   打开 Chrome，访问 `chrome://inspect/#remote-debugging`，开启"启用远程调试"开关。这允许自动化工具操作 Colab 而不触发 Google 的"不安全浏览器"检测。
+
+> **Why not `--remote-debugging-port`?** / 为什么不用 `--remote-debugging-port`？
+>
+> Launching Chrome with `--remote-debugging-port` causes Google to block login ("This browser or app may not be secure"). The `chrome://inspect` toggle avoids this because it doesn't modify the browser's launch signature.
+>
+> 使用 `--remote-debugging-port` 启动 Chrome 会导致 Google 阻止登录（"此浏览器或应用可能不安全"）。`chrome://inspect` 开关不修改浏览器启动签名，因此不会被检测。
+
+### 4. Upload the Colab Notebook / 上传 Colab Notebook
 
 Upload `NewVideoTranslate.ipynb` to Google Colab.
 
