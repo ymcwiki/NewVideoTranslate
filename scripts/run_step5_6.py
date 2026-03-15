@@ -180,7 +180,7 @@ if not os.path.exists(step5_done):
     print(f'  VRAM: {free/1e9:.1f}GB free / {total/1e9:.1f}GB total', flush=True)
 
     # Phase 2: Encode user's reference voice (stored on Drive, shared across all videos)
-    ref_voice_path = os.path.join(DRIVE_ROOT, 'ref_voice_weyk.wav')
+    ref_voice_path = os.path.join(DRIVE_ROOT, 'ref_voice.wav')
     ref_codes = None
     if os.path.exists(ref_voice_path):
         wav, sr_orig = torchaudio.load(ref_voice_path)
@@ -195,7 +195,7 @@ if not os.path.exists(step5_done):
             ref_codes = indices[0, :, :feat_lens[0]].cpu()
         print(f'  Reference voice: {wav.shape[1]/TTS_SR:.1f}s, {ref_codes.shape[1]} frames', flush=True)
     else:
-        print(f'  WARNING: ref_voice_weyk.wav not found at {ref_voice_path}', flush=True)
+        print(f'  WARNING: ref_voice.wav not found at {ref_voice_path}', flush=True)
         print(f'  TTS will generate without voice reference (inconsistent voices!)', flush=True)
 
     # Phase 3: Generate TTS for each segment via direct inference
