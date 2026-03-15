@@ -428,8 +428,9 @@ if not os.path.exists(step6_done):
             e = seg['end'] / SPEED_UP
             sh, sm, ss = int(s // 3600), int(s % 3600 // 60), s % 60
             eh, em, es = int(e // 3600), int(e % 3600 // 60), e % 60
-            # Split subtitles: max 15 chars/line to avoid player auto-wrap orphans
-            MAX_LINE = 15
+            # Split subtitles: FontSize=16 fits ~22 Chinese chars per line on 1080p
+            # Never break English words mid-word
+            MAX_LINE = 22
             lines = []
             if len(t) > MAX_LINE:
                 # Split at punctuation first
@@ -443,21 +444,22 @@ if not os.path.exists(step6_done):
                         cur_line += part
                 if cur_line:
                     lines.append(cur_line)
-                # Force split lines still too long
+                # Force split lines still too long, respecting English words
                 final_lines = []
                 for line in lines:
                     while len(line) > MAX_LINE + 3:
-                        # Find a natural break point (avoid orphan chars)
                         bp = MAX_LINE
-                        for k in range(MAX_LINE, max(MAX_LINE - 5, 0), -1):
-                            if line[k] in '，。！？、；：的了是在有和':
-                                bp = k + 1
-                                break
+                        # Don't break inside English words: scan back for non-alpha
+                        if bp < len(line) and line[bp].isascii() and line[bp].isalpha():
+                            for k in range(bp, max(bp - 10, 0), -1):
+                                if not (line[k].isascii() and line[k].isalpha()):
+                                    bp = k + 1
+                                    break
                         final_lines.append(line[:bp])
                         line = line[bp:]
                     if line:
                         final_lines.append(line)
-                lines = final_lines[:3]  # Max 3 lines
+                lines = final_lines[:3]
             else:
                 lines = [t]
 
@@ -489,7 +491,7 @@ if not os.path.exists(step6_done):
     encode_args = ['-c:v', 'libx264', '-preset', 'medium', '-crf', '15']
 
     srt_esc = srt_path.replace(':', '\\:').replace("'", "\\'")
-    fc = f"[0:v]setpts=PTS/{SPEED_UP},subtitles='{srt_esc}':force_style='FontName=Noto Sans CJK SC,FontSize=22'[v];[1:a]atempo={SPEED_UP}[a]"
+    fc = f"[0:v]setpts=PTS/{SPEED_UP},subtitles='{srt_esc}':force_style='FontName=Noto Sans CJK SC,FontSize=16'[v];[1:a]atempo={SPEED_UP}[a]"
     r = subprocess.run([
         'ffmpeg', '-y', '-i', video_path, '-i', final_audio,
         '-filter_complex', fc, '-map', '[v]', '-map', '[a]',
@@ -517,12 +519,12 @@ if not os.path.exists(step6_done):
                     s, e = seg.get('original_start', seg['start']), seg.get('original_end', seg['end'])
                     sh, sm, ss = int(s//3600), int(s%3600//60), s%60
                     eh, em, es = int(e//3600), int(e%3600//60), e%60
-                    lines = [t] if len(t) <= 15 else [t[i:i+15] for i in range(0, len(t), 15)][:3]
+                    lines = [t] if len(t) <= 22 else [t[i:i+22] for i in range(0, len(t), 22)][:3]
                     f.write(f"{idx}\n{sh:02d}:{sm:02d}:{int(ss):02d},{int((ss%1)*1000):03d} --> {eh:02d}:{em:02d}:{int(es):02d},{int((es%1)*1000):03d}\n")
                     f.write('\n'.join(lines) + '\n\n')
                     idx += 1
             p2_srt_esc = p2_srt.replace(':', '\\:').replace("'", "\\'")
-            p2_fc = f"subtitles='{p2_srt_esc}':force_style='FontName=Noto Sans CJK SC,FontSize=22'"
+            p2_fc = f"subtitles='{p2_srt_esc}':force_style='FontName=Noto Sans CJK SC,FontSize=16'"
             r2 = subprocess.run([
                 'ffmpeg', '-y', '-i', video_path, '-vf', p2_fc,
                 '-c:a', 'copy', '-c:v', 'libx264', '-preset', 'medium', '-crf', '15',
