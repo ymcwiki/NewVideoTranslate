@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Steps 5-6: Fish Speech S2 TTS (direct inference, no subprocess) + Video synthesis."""
+"""Run Steps 5-6: TTS (Fish Speech S2 or IndexTTS2) + Video synthesis."""
 import os, sys, json, re, gc, tempfile, shutil, subprocess, time
 from datetime import datetime
 import numpy as np
@@ -8,6 +8,8 @@ import torch, librosa, soundfile as sf
 os.environ['LD_LIBRARY_PATH'] = '/usr/lib64-nvidia:/usr/local/cuda/lib64:' + os.environ.get('LD_LIBRARY_PATH', '')
 
 FOLDER = sys.argv[1]
+TTS_ENGINE = sys.argv[2] if len(sys.argv) > 2 else 'fish'
+print(f'TTS engine: {TTS_ENGINE}', flush=True)
 
 # ============================================================
 # TTS Text Preprocessing: proper nouns + special chars
@@ -104,7 +106,7 @@ def adjust_audio_length(audio, sr, desired_length, max_length=None, min_speed=0.
     return adj[:int(actual * sr)], actual
 
 # ============================================================
-# Step 5: Fish Speech S2 TTS — Direct Inference (no API server)
+# Step 5: TTS — Fish Speech S2 or IndexTTS2
 # ============================================================
 translation_path = os.path.join(FOLDER, 'translation.json')
 vocals_path = os.path.join(FOLDER, 'audio_vocals.wav')
@@ -112,162 +114,230 @@ step5_done = os.path.join(FOLDER, '.step5_done')
 wavs_dir = os.path.join(FOLDER, 'wavs')
 
 if not os.path.exists(step5_done):
-    print('\n' + '='*60 + '\nStep 5: Fish Speech S2 TTS (Direct Inference)\n' + '='*60, flush=True)
+    print('\n' + '='*60 + f'\nStep 5: TTS ({TTS_ENGINE})\n' + '='*60, flush=True)
     os.makedirs(wavs_dir, exist_ok=True)
     with open(translation_path, 'r', encoding='utf-8') as f:
         segments = json.load(f)
 
     clear_vram()
 
-    # Phase 1: Load models directly in this process (NO subprocess)
-    print('  Loading Fish Speech models directly...', flush=True)
-    print(f'  Checkpoint: {CKPT_DIR}', flush=True)
+    if TTS_ENGINE == 'fish':
+        print('  Using Fish Speech S2 engine', flush=True)
 
-    import torchaudio
-    from fish_speech.models.text2semantic.inference import (
-        init_model, generate_long,
-    )
-    from fish_speech.models.dac.inference import load_model as load_decoder_model
+        # Phase 1: Load models directly in this process (NO subprocess)
+        print('  Loading Fish Speech models directly...', flush=True)
+        print(f'  Checkpoint: {CKPT_DIR}', flush=True)
 
-    precision = torch.bfloat16
-
-    # Load LLM (DualARTransformer)
-    print('  Loading LLM...', flush=True)
-    model, decode_one_token = init_model(CKPT_DIR, 'cuda', precision)
-
-    # CRITICAL FIX: inject semantic token IDs if not already set by from_pretrained
-    # New s2-pro models auto-inject via tokenizer_config.json; old ones need special_tokens.json
-    if model.config.semantic_begin_id == 0:
-        _st_path = os.path.join(CKPT_DIR, 'special_tokens.json')
-        if os.path.exists(_st_path):
-            with open(_st_path) as _f:
-                _special = json.load(_f)
-            _sem_ids = [v for k, v in _special.items() if k.startswith('<|semantic:')]
-            if _sem_ids:
-                model.config.semantic_begin_id = min(_sem_ids)
-                model.config.semantic_end_id = max(_sem_ids)
-        else:
-            print('  WARNING: semantic_begin_id=0 and no special_tokens.json found!', flush=True)
-    print(f'  Semantic IDs: begin={model.config.semantic_begin_id}, end={model.config.semantic_end_id}', flush=True)
-
-    with torch.device('cuda'):
-        model.setup_caches(
-            max_batch_size=1,
-            max_seq_len=model.config.max_seq_len,
-            dtype=next(model.parameters()).dtype,
+        import torchaudio
+        from fish_speech.models.text2semantic.inference import (
+            init_model, generate_long,
         )
-    model._cache_setup_done = True
-    print('  LLM loaded.', flush=True)
+        from fish_speech.models.dac.inference import load_model as load_decoder_model
 
-    # Load DAC codec (decoder/encoder)
-    print('  Loading codec...', flush=True)
-    codec_path = os.path.join(CKPT_DIR, 'codec.pth')
-    if not os.path.exists(codec_path):
-        for candidate in ['firefly_gan_vq', 'codec']:
-            p = os.path.join(CKPT_DIR, candidate)
-            if os.path.exists(p):
-                codec_path = p
-                break
-    decoder = load_decoder_model(
-        config_name='modded_dac_vq',
-        checkpoint_path=codec_path,
-        device='cuda'
-    )
-    TTS_SR = decoder.sample_rate
-    print(f'  Codec loaded. Sample rate: {TTS_SR}', flush=True)
+        precision = torch.bfloat16
 
-    free, total = torch.cuda.mem_get_info()
-    print(f'  VRAM: {free/1e9:.1f}GB free / {total/1e9:.1f}GB total', flush=True)
+        # Load LLM (DualARTransformer)
+        print('  Loading LLM...', flush=True)
+        model, decode_one_token = init_model(CKPT_DIR, 'cuda', precision)
 
-    # Phase 2: Encode user's reference voice (stored on Drive, shared across all videos)
-    ref_voice_path = os.path.join(DRIVE_ROOT, 'ref_voice.wav')
-    ref_codes = None
-    if os.path.exists(ref_voice_path):
-        wav, sr_orig = torchaudio.load(ref_voice_path)
-        if wav.shape[0] > 1:
-            wav = wav.mean(dim=0, keepdim=True)
-        wav = torchaudio.functional.resample(wav, sr_orig, TTS_SR)
-        model_dtype = next(decoder.parameters()).dtype
-        audios = wav[None].to('cuda', dtype=model_dtype)
-        audio_lengths = torch.tensor([wav.shape[1]], device='cuda', dtype=torch.long)
-        with torch.inference_mode():
-            indices, feat_lens = decoder.encode(audios, audio_lengths)
-            ref_codes = indices[0, :, :feat_lens[0]].cpu()
-        print(f'  Reference voice: {wav.shape[1]/TTS_SR:.1f}s, {ref_codes.shape[1]} frames', flush=True)
-    else:
-        print(f'  WARNING: ref_voice.wav not found at {ref_voice_path}', flush=True)
-        print(f'  TTS will generate without voice reference (inconsistent voices!)', flush=True)
+        # CRITICAL FIX: inject semantic token IDs if not already set by from_pretrained
+        # New s2-pro models auto-inject via tokenizer_config.json; old ones need special_tokens.json
+        if model.config.semantic_begin_id == 0:
+            _st_path = os.path.join(CKPT_DIR, 'special_tokens.json')
+            if os.path.exists(_st_path):
+                with open(_st_path) as _f:
+                    _special = json.load(_f)
+                _sem_ids = [v for k, v in _special.items() if k.startswith('<|semantic:')]
+                if _sem_ids:
+                    model.config.semantic_begin_id = min(_sem_ids)
+                    model.config.semantic_end_id = max(_sem_ids)
+            else:
+                print('  WARNING: semantic_begin_id=0 and no special_tokens.json found!', flush=True)
+        print(f'  Semantic IDs: begin={model.config.semantic_begin_id}, end={model.config.semantic_end_id}', flush=True)
 
-    # Phase 3: Generate TTS for each segment via direct inference
-    failed = 0
-    for i, seg in enumerate(segments):
-        wp = os.path.join(wavs_dir, f'{i:04d}.wav')
-        if os.path.exists(wp) and os.path.getsize(wp) > 100:
-            continue
+        with torch.device('cuda'):
+            model.setup_caches(
+                max_batch_size=1,
+                max_seq_len=model.config.max_seq_len,
+                dtype=next(model.parameters()).dtype,
+            )
+        model._cache_setup_done = True
+        print('  LLM loaded.', flush=True)
 
-        text = seg.get('translation', '').strip()
-        if not text or text.startswith('['):
-            sf.write(wp, np.zeros(int(0.1 * TTS_SR), dtype=np.float32), TTS_SR)
-            continue
+        # Load DAC codec (decoder/encoder)
+        print('  Loading codec...', flush=True)
+        codec_path = os.path.join(CKPT_DIR, 'codec.pth')
+        if not os.path.exists(codec_path):
+            for candidate in ['firefly_gan_vq', 'codec']:
+                p = os.path.join(CKPT_DIR, candidate)
+                if os.path.exists(p):
+                    codec_path = p
+                    break
+        decoder = load_decoder_model(
+            config_name='modded_dac_vq',
+            checkpoint_path=codec_path,
+            device='cuda'
+        )
+        TTS_SR = decoder.sample_rate
+        print(f'  Codec loaded. Sample rate: {TTS_SR}', flush=True)
 
-        # Fish Speech expects speaker-tagged text
-        tagged_text = f"<|speaker:0|>{preprocess_tts_text(text)}"
+        free, total = torch.cuda.mem_get_info()
+        print(f'  VRAM: {free/1e9:.1f}GB free / {total/1e9:.1f}GB total', flush=True)
 
-        success = False
-        for retry in range(3):
-            try:
-                codes_list = []
-                for response in generate_long(
-                    model=model,
-                    device='cuda',
-                    decode_one_token=decode_one_token,
-                    text=tagged_text,
-                    max_new_tokens=2048,
-                    top_p=0.8,
-                    repetition_penalty=1.5,
-                    temperature=0.7,
-                    chunk_length=200,
-                    prompt_text=[''] if ref_codes is not None else None,
-                    prompt_tokens=[ref_codes] if ref_codes is not None else None,
-                ):
-                    if response.action == 'sample':
-                        codes_list.append(response.codes)
-                    elif response.action == 'next':
-                        break
+        # Phase 2: Encode user's reference voice (stored on Drive, shared across all videos)
+        ref_voice_path = os.path.join(DRIVE_ROOT, 'ref_voice.wav')
+        ref_codes = None
+        if os.path.exists(ref_voice_path):
+            wav, sr_orig = torchaudio.load(ref_voice_path)
+            if wav.shape[0] > 1:
+                wav = wav.mean(dim=0, keepdim=True)
+            wav = torchaudio.functional.resample(wav, sr_orig, TTS_SR)
+            model_dtype = next(decoder.parameters()).dtype
+            audios = wav[None].to('cuda', dtype=model_dtype)
+            audio_lengths = torch.tensor([wav.shape[1]], device='cuda', dtype=torch.long)
+            with torch.inference_mode():
+                indices, feat_lens = decoder.encode(audios, audio_lengths)
+                ref_codes = indices[0, :, :feat_lens[0]].cpu()
+            print(f'  Reference voice: {wav.shape[1]/TTS_SR:.1f}s, {ref_codes.shape[1]} frames', flush=True)
+        else:
+            print(f'  WARNING: ref_voice.wav not found at {ref_voice_path}', flush=True)
+            print(f'  TTS will generate without voice reference (inconsistent voices!)', flush=True)
 
-                if codes_list:
-                    merged_codes = torch.cat(codes_list, dim=1).to('cuda')
-                    with torch.inference_mode():
-                        audio_tensor = decoder.from_indices(merged_codes[None])[0].squeeze()
-                    audio_np = audio_tensor.float().cpu().numpy()
-                    if len(audio_np) > 100:
-                        sf.write(wp, audio_np, TTS_SR)
+        # Phase 3: Generate TTS for each segment via direct inference
+        failed = 0
+        for i, seg in enumerate(segments):
+            wp = os.path.join(wavs_dir, f'{i:04d}.wav')
+            if os.path.exists(wp) and os.path.getsize(wp) > 100:
+                continue
+
+            text = seg.get('translation', '').strip()
+            if not text or text.startswith('['):
+                sf.write(wp, np.zeros(int(0.1 * TTS_SR), dtype=np.float32), TTS_SR)
+                continue
+
+            # Fish Speech expects speaker-tagged text
+            tagged_text = f"<|speaker:0|>{preprocess_tts_text(text)}"
+
+            success = False
+            for retry in range(3):
+                try:
+                    codes_list = []
+                    for response in generate_long(
+                        model=model,
+                        device='cuda',
+                        decode_one_token=decode_one_token,
+                        text=tagged_text,
+                        max_new_tokens=2048,
+                        top_p=0.8,
+                        repetition_penalty=1.5,
+                        temperature=0.7,
+                        chunk_length=200,
+                        prompt_text=[''] if ref_codes is not None else None,
+                        prompt_tokens=[ref_codes] if ref_codes is not None else None,
+                    ):
+                        if response.action == 'sample':
+                            codes_list.append(response.codes)
+                        elif response.action == 'next':
+                            break
+
+                    if codes_list:
+                        merged_codes = torch.cat(codes_list, dim=1).to('cuda')
+                        with torch.inference_mode():
+                            audio_tensor = decoder.from_indices(merged_codes[None])[0].squeeze()
+                        audio_np = audio_tensor.float().cpu().numpy()
+                        if len(audio_np) > 100:
+                            sf.write(wp, audio_np, TTS_SR)
+                            success = True
+                            break
+
+                    if retry < 2:
+                        time.sleep(1)
+                except Exception as e:
+                    if retry < 2:
+                        time.sleep(1)
+                    else:
+                        print(f'  Warning [{i}]: {str(e)[:150]}', flush=True)
+
+            if not success:
+                failed += 1
+                sf.write(wp, np.zeros(int(0.5 * TTS_SR), dtype=np.float32), TTS_SR)
+
+            if (i + 1) % 10 == 0:
+                print(f'  [{i+1}/{len(segments)}] {text[:40]}', flush=True)
+
+        # Phase 4: Free VRAM
+        print('  Freeing models...', flush=True)
+        del model, decode_one_token, decoder
+        clear_vram()
+        free, total = torch.cuda.mem_get_info()
+        print(f'  VRAM: {free/1e9:.1f}GB free / {total/1e9:.1f}GB total', flush=True)
+
+    elif TTS_ENGINE == 'indextts':
+        print('  Using IndexTTS2 engine', flush=True)
+        INDEXTTS_DIR = '/content/index-tts'
+        INDEXTTS_CKPT = os.path.join(INDEXTTS_DIR, 'checkpoints')
+
+        sys.path.insert(0, INDEXTTS_DIR)
+        from indextts.infer_v2 import IndexTTS2
+
+        tts = IndexTTS2(
+            cfg_path=os.path.join(INDEXTTS_CKPT, 'config.yaml'),
+            model_dir=INDEXTTS_CKPT,
+            use_fp16=True,
+            device='cuda',
+        )
+        TTS_SR = 22050  # IndexTTS2 native output rate
+
+        ref_voice_path = os.path.join(DRIVE_ROOT, 'ref_voice.wav')
+        if not os.path.exists(ref_voice_path):
+            print(f'  WARNING: ref_voice.wav not found at {ref_voice_path}', flush=True)
+
+        free, total = torch.cuda.mem_get_info()
+        print(f'  VRAM: {free/1e9:.1f}GB free / {total/1e9:.1f}GB total', flush=True)
+
+        failed = 0
+        for i, seg in enumerate(segments):
+            wp = os.path.join(wavs_dir, f'{i:04d}.wav')
+            if os.path.exists(wp) and os.path.getsize(wp) > 100:
+                continue
+
+            text = seg.get('translation', '').strip()
+            if not text or text.startswith('['):
+                sf.write(wp, np.zeros(int(0.1 * TTS_SR), dtype=np.float32), TTS_SR)
+                continue
+
+            processed_text = preprocess_tts_text(text)
+            success = False
+            for retry in range(3):
+                try:
+                    tts.infer(
+                        spk_audio_prompt=ref_voice_path,
+                        text=processed_text,
+                        output_path=wp,
+                        verbose=False,
+                    )
+                    if os.path.exists(wp) and os.path.getsize(wp) > 100:
                         success = True
                         break
+                except Exception as e:
+                    if retry < 2:
+                        time.sleep(1)
+                    else:
+                        print(f'  Warning [{i}]: {str(e)[:150]}', flush=True)
 
-                if retry < 2:
-                    time.sleep(1)
-            except Exception as e:
-                if retry < 2:
-                    time.sleep(1)
-                else:
-                    print(f'  Warning [{i}]: {str(e)[:150]}', flush=True)
+            if not success:
+                failed += 1
+                sf.write(wp, np.zeros(int(0.5 * TTS_SR), dtype=np.float32), TTS_SR)
 
-        if not success:
-            failed += 1
-            sf.write(wp, np.zeros(int(0.5 * TTS_SR), dtype=np.float32), TTS_SR)
+            if (i + 1) % 10 == 0:
+                print(f'  [{i+1}/{len(segments)}] {text[:40]}', flush=True)
 
-        if (i + 1) % 10 == 0:
-            print(f'  [{i+1}/{len(segments)}] {text[:40]}', flush=True)
+        # Free VRAM
+        print('  Freeing models...', flush=True)
+        del tts
+        clear_vram()
 
-    # Phase 4: Free VRAM
-    print('  Freeing models...', flush=True)
-    del model, decode_one_token, decoder
-    clear_vram()
-    free, total = torch.cuda.mem_get_info()
-    print(f'  VRAM: {free/1e9:.1f}GB free / {total/1e9:.1f}GB total', flush=True)
-
-    open(step5_done, 'w').write(datetime.now().isoformat())
+    open(step5_done, 'w').write(f'{TTS_ENGINE}:{datetime.now().isoformat()}')
     valid = len(segments) - failed
     print(f'  TTS done: {valid}/{len(segments)} segments ({failed} failed)', flush=True)
 else:
