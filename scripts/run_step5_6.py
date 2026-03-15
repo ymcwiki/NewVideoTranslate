@@ -288,9 +288,20 @@ if not os.path.exists(step5_done):
         )
         TTS_SR = 22050  # IndexTTS2 native output rate
 
-        ref_voice_path = os.path.join(DRIVE_ROOT, 'ref_voice.wav')
+        # IndexTTS uses original video speaker voice (not user's ref_voice.wav)
+        speaker_dir = os.path.join(FOLDER, 'SPEAKER')
+        ref_voice_path = None
+        if os.path.exists(speaker_dir):
+            spk_files = sorted([f for f in os.listdir(speaker_dir) if f.endswith('.wav')])
+            if spk_files:
+                ref_voice_path = os.path.join(speaker_dir, spk_files[0])
+                print(f'  Voice reference: {spk_files[0]} (original speaker)', flush=True)
+        if not ref_voice_path:
+            # Fallback to user voice if no speaker extracted
+            ref_voice_path = os.path.join(DRIVE_ROOT, 'ref_voice.wav')
+            print(f'  Voice reference: ref_voice.wav (fallback)', flush=True)
         if not os.path.exists(ref_voice_path):
-            print(f'  WARNING: ref_voice.wav not found at {ref_voice_path}', flush=True)
+            print(f'  WARNING: No voice reference found!', flush=True)
 
         free, total = torch.cuda.mem_get_info()
         print(f'  VRAM: {free/1e9:.1f}GB free / {total/1e9:.1f}GB total', flush=True)
@@ -473,24 +484,9 @@ if not os.path.exists(step6_done):
     else:
         shutil.copy(tts_path, final_audio)
 
-    # Probe source video bitrate to match quality
+    # Encode with highest quality (CRF 15, no bitrate cap)
     print('  Encoding video...')
-    src_bitrate = None
-    try:
-        probe = subprocess.run(
-            ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', video_path],
-            capture_output=True, text=True, timeout=10)
-        src_bitrate = int(json.loads(probe.stdout).get('format', {}).get('bit_rate', 0))
-    except Exception:
-        pass
-    # Use CRF 18 (visually near-lossless) with medium preset; cap bitrate to source
-    encode_args = ['-c:v', 'libx264', '-preset', 'medium', '-crf', '18']
-    if src_bitrate and src_bitrate > 0:
-        # Cap at source bitrate to avoid bloating file size
-        maxrate = f'{int(src_bitrate / 1000)}k'
-        bufsize = f'{int(src_bitrate / 500)}k'
-        encode_args += ['-maxrate', maxrate, '-bufsize', bufsize]
-        print(f'  Source bitrate: {src_bitrate/1e6:.1f} Mbps, capping output')
+    encode_args = ['-c:v', 'libx264', '-preset', 'medium', '-crf', '15']
 
     srt_esc = srt_path.replace(':', '\\:').replace("'", "\\'")
     fc = f"[0:v]setpts=PTS/{SPEED_UP},subtitles='{srt_esc}':force_style='FontName=Noto Sans CJK SC,FontSize=22'[v];[1:a]atempo={SPEED_UP}[a]"
@@ -529,8 +525,7 @@ if not os.path.exists(step6_done):
             p2_fc = f"subtitles='{p2_srt_esc}':force_style='FontName=Noto Sans CJK SC,FontSize=22'"
             r2 = subprocess.run([
                 'ffmpeg', '-y', '-i', video_path, '-vf', p2_fc,
-                '-c:a', 'copy', '-c:v', 'libx264', '-preset', 'medium', '-crf', '18',
-                *((['-maxrate', maxrate, '-bufsize', bufsize] if src_bitrate and src_bitrate > 0 else [])),
+                '-c:a', 'copy', '-c:v', 'libx264', '-preset', 'medium', '-crf', '15',
                 p2_video
             ], capture_output=True, text=True)
             if os.path.exists(p2_video) and os.path.getsize(p2_video) > 1000:
